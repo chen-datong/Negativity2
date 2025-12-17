@@ -365,19 +365,22 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
     """
     if nA < nB:
         raise ValueError("Protocol requires nA >= nB.")
-
-    NM_list = sorted(list(NM_list))
-    if NM_max is None:
-        NM_max = NM_list[-1]
-    if NM_max < NM_list[-1]:
-        raise ValueError("NM_max must be >= max(NM_list).")
-
     nA1 = nA - nB
     nA2 = nB
 
     d_A1 = get_dims(nA1)
     d_A2 = get_dims(nA2)
     d_B  = get_dims(nB)
+    d = d_A1 * d_A2 * d_B
+
+
+    NM_list = sorted(list(NM_list))
+
+    if NM_max is None:
+        NM_max = NM_list[-1]
+    if NM_max < NM_list[-1]:
+        raise ValueError("NM_max must be >= max(NM_list).")
+
 
     # computational_basis = get_computational_measurement(d_A1)
     swap_povms = get_swap_test_povm_operators(d_A2, d_B)
@@ -388,8 +391,10 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
 
     # collect estimates for each unitary q: a dict NM -> estimate
     per_q_estimates = {NM: [] for NM in NM_list}
+    per_q_estimates_nd = {NM: [] for NM in NM_list}
 
     prefactor = (d_A1 ** (t - 1)) * (d_A2 ** t)
+    prefactor2 = (d_A1) * (d_A2 ** 2)
 
     for q in range(Nu):
         d_A = d_A1 * d_A2
@@ -414,13 +419,13 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
 
         # --- key change: sample NM_max individual outcomes in sequence ---
         # outcomes_idx[i] is in {0..K-1}, representing (r_idx, b_idx)
-        outcomes_idx = np.random.choice(K, size=NM_max, p=probabilities)
+        outcomes_idx = np.random.choice(K, size=NM_max * d, p=probabilities)
 
         # maintain cumulative counts for each b: plus/minus
         n_plus  = np.zeros(num_b_outcomes, dtype=np.int64)
         n_minus = np.zeros(num_b_outcomes, dtype=np.int64)
 
-        checkpoints = set(NM_list)
+        checkpoints = set(np.array(NM_list) * d)
         # iterate and update counts; compute estimator at checkpoints
         for i, idx in enumerate(outcomes_idx, start=1):
             b = idx % num_b_outcomes
@@ -434,27 +439,32 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
             if i in checkpoints:
                 NM_cur = i
                 denom = math.comb(NM_cur, t) if NM_cur >= t else 0
+                denom2 = math.comb(NM_cur, 2) if NM_cur >= 2 else 0
                 if denom == 0:
                     M_neg_q = 0.0
                 else:
                     total_sum = _total_sum_from_counts(n_plus, n_minus, t)
+                    total_sum2 = _total_sum_from_counts(n_plus, n_minus, 2)
                     M_neg_q = prefactor * (total_sum / denom)
+                    M_neg2nd = prefactor2 * (total_sum2 / denom2)
 
-                per_q_estimates[NM_cur].append(M_neg_q)
+                per_q_estimates[int(NM_cur / d)].append(M_neg_q)
+                per_q_estimates_nd[int(NM_cur / d)].append(M_neg2nd)
 
     # average over unitaries
     final = {NM: float(np.mean(per_q_estimates[NM])) for NM in NM_list}
-    return final
+    final2nd = {NM: float(np.mean(per_q_estimates_nd[NM])) for NM in NM_list}
+    return final, final2nd
 
 
 def _worker_GHZ_multi(args):
     rho_test, nA, nB, t, Nu, NM_list = args
-    est_dict = estimate_negativity_moment_multiNM(rho_test, nA, nB, t, Nu, NM_list, NM_max=max(NM_list))
+    est_dict, est_dict2nd = estimate_negativity_moment_multiNM(rho_test, nA, nB, t, Nu, NM_list, NM_max=max(NM_list))
     # 返回按 NM_list 顺序排列的误差
     # return [abs(est_dict[NM] - 4.5) for NM in NM_list]
-    return [est_dict[NM] for NM in NM_list]
+    return [est_dict[NM] for NM in NM_list], [est_dict2nd[NM] for NM in NM_list]
 
-def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results.csv'):
+def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results_dbasis.csv'):
     d_A = get_dims(nA)
     d_B = get_dims(nB)
     dim_total = d_A * d_B
@@ -464,32 +474,41 @@ def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results.csv')
     ghz_vec[-1] = 1/np.sqrt(2)
     rho_test = np.outer(ghz_vec, ghz_vec.conj())
 
-    NM_list = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000]
+    NM_list = [1, 2, 5, 10, 20, 50, 100]
 
     args_list = [(rho_test, nA, nB, 3, Nu, NM_list)] * repeat
 
-    with multiprocessing.Pool(50) as pool:
+    with multiprocessing.Pool() as pool:
         # results shape: (repeat, len(NM_list))
-        results = list(tqdm(pool.imap_unordered(_worker_GHZ_multi, args_list), total=repeat))
+        outs = list(tqdm(pool.imap_unordered(_worker_GHZ_multi, args_list), total=repeat))
 
-    results = np.array(results, dtype=float) - 4.5  # (repeat, L)
+    results, results2 = map(list, zip(*outs))
+    results = np.asarray(results, dtype=float)
+    results2 = np.asarray(results2, dtype=float)
+    purity = results2 - 1
+    thirdM = (results - 1 - 3 * purity) / 2
+    results = thirdM - 0.25  # (repeat, L)
     mean_errors = np.abs(results).mean(axis=0)        # (L,)
     mse = np.square(results).mean(axis=0)
 
-    experiment = []
-    for NM, err in zip(NM_list, mean_errors):
-        experiment.append([nA, nB, Nu, NM, float(err)])
+    purity_error = purity - 1
+    mean_errors2 = np.abs(purity_error).mean(axis=0)
+    mse2 = np.square(purity_error).mean(axis=0)
 
-    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'result'])
+    experiment = []
+    for NM, err, err2 in zip(NM_list, mean_errors, mean_errors2):
+        experiment.append([nA, nB, Nu, NM, float(err2), float(err)])
+
+    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'purity', 'thirdM'])
     file_exists = os.path.exists(csv_filename)
     df.to_csv(csv_filename, mode='a', header=not file_exists, index=False)
 
     experiment2 = []
-    for NM, err in zip(NM_list, mse):
-        experiment2.append([nA, nB, Nu, NM, float(err)])
+    for NM, err, err2 in zip(NM_list, mse, mse2):
+        experiment2.append([nA, nB, Nu, NM, float(err2), float(err)])
 
-    csv_filename2 = 'MSE.csv'
-    df = pd.DataFrame(experiment2, columns=['nA', 'nB', 'Nu', 'NM', 'result'])
+    csv_filename2 = 'MSE_dbasis.csv'
+    df = pd.DataFrame(experiment2, columns=['nA', 'nB', 'Nu', 'NM', 'purity', 'thirdM'])
     file_exists = os.path.exists(csv_filename2)
     df.to_csv(csv_filename2, mode='a', header=not file_exists, index=False)
     return df
