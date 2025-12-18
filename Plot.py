@@ -9,7 +9,7 @@ import matplotlib.ticker as ticker
 matplotlib.rcParams["font.sans-serif"] = 'Times New Roman'
 matplotlib.rcParams["mathtext.fontset"] = 'cm'
 
-def plot_nA_dependence(csv_filename='experiment_results.csv'):
+def plot_nA_dependence(csv_filename='experiment_results_dbasis.csv'):
     # 读取CSV文件
     df = pd.read_csv(csv_filename)
     cmap = LinearSegmentedColormap.from_list("deep_light_blue", ["#00098B", "#4159E1D4", "#87A7EBE2", "#ADD8E6"])
@@ -24,7 +24,7 @@ def plot_nA_dependence(csv_filename='experiment_results.csv'):
         nA_data = df[(df['nA'] == nA) & (df['Nu'] == 1)].copy()
         color = cmap(1 - (nA - 7) / (len(nA_values) - 2))
         # 以 NM 为横轴，result 为纵轴画图
-        plt.plot(nA_data['NM'][2:], nA_data['result'][2:], label=f'$n_A = {nA}$', marker='.', markersize=10, color = color)
+        plt.plot(nA_data['NM'][2:], nA_data['thirdM'][2:], label=f'$n_A = {nA}$', marker='.', markersize=10, color = color)
 
     # 添加图例
     plt.legend(fontsize=20)
@@ -44,25 +44,25 @@ def plot_nA_dependence(csv_filename='experiment_results.csv'):
     plt.yticks(fontsize=20)
     plt.tight_layout()
     # 显示图形
-    plt.savefig('./figure/MSE_nA.pdf')
+    plt.savefig('./figure/SE_nA.pdf')
 
     plt.show()
 
 
-def plot_Nu_dependence(filename='MSE.csv'):
+def plot_Nu_dependence(filename='experiment_results_dbasis.csv'):
     df = pd.read_csv(filename)
     cmap = LinearSegmentedColormap.from_list(
         "deep_light_green",
         ["#003300", "#1b5e20", "#388e3c", "#66bb6a", "#c8e6c9"]
     )
-    nu_data = df[(df['nA'] == 8)].copy()
+    nu_data = df[(df['nA'] == 9)].copy()
     nu = nu_data['Nu'].unique()
     colors = np.linspace(0.2, 0.95, len(nu))[::-1]
     plt.figure(figsize=(10, 6.18))
     for i, n in enumerate(nu):
         # 以 NM 为横轴，result 为纵轴画图
         plot_data = nu_data[nu_data['Nu'] == n].copy()
-        plt.plot(plot_data['NM'], plot_data['result'], label=f'$N_U = {n}$', marker='.', markersize=10, color = cmap(colors[i]))
+        plt.plot(plot_data['NM'], plot_data['thirdM'], label=f'$N_U = {n}$', marker='.', markersize=10, color = cmap(colors[i]))
         plt.legend(fontsize=20)
     plt.xscale('log')
     plt.yscale('log')
@@ -80,7 +80,7 @@ def plot_Nu_dependence(filename='MSE.csv'):
     plt.tick_params(axis='both', which='both', direction='in', labelsize=20)
     plt.tight_layout()
     # 显示图形
-    plt.savefig('./figure/MSE_Nu.pdf')
+    plt.savefig('./figure/SE_Nu.pdf')
     plt.show()
     
 
@@ -123,6 +123,6 @@ def plot_converge_val(csv_filename='experiment_results.csv'):
 
 
 # 调用函数画图
-plot_nA_dependence(csv_filename='MSE.csv')
+plot_nA_dependence()
 # plot_converge_val()
 plot_Nu_dependence()
