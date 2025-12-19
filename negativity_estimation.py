@@ -357,14 +357,25 @@ def _total_sum_from_counts(n_plus, n_minus, t):
     return total_sum
 
 
-def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None):
+import numpy as np
+import math
+from scipy.stats import unitary_group
+
+def estimate_negativity_moment_multiNM(
+    rho, nA, nB, Nu, NM_list, NM_max=None, t_min=2, t_max=5
+):
     """
     Run the protocol once with NM_max samples, and compute estimates at each NM in NM_list
-    by using the first NM samples (prefix).
-    Returns: dict {NM: final_estimate_averaged_over_unitaries}
+    by using the first NM samples (prefix), for all t in [t_min, t_max].
+
+    Returns:
+        final_by_t: dict {t: {NM: mean_over_unitaries}}
     """
     if nA < nB:
         raise ValueError("Protocol requires nA >= nB.")
+    if t_min < 2 or t_max < t_min:
+        raise ValueError("Require 2 <= t_min <= t_max.")
+
     nA1 = nA - nB
     nA2 = nB
 
@@ -373,7 +384,6 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
     d_B  = get_dims(nB)
     d = d_A1 * d_A2 * d_B
 
-
     NM_list = sorted(list(NM_list))
 
     if NM_max is None:
@@ -381,20 +391,18 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
     if NM_max < NM_list[-1]:
         raise ValueError("NM_max must be >= max(NM_list).")
 
-
-    # computational_basis = get_computational_measurement(d_A1)
     swap_povms = get_swap_test_povm_operators(d_A2, d_B)
 
     num_b_outcomes = d_A1
     num_r_outcomes = len(swap_povms)      # should be 2 (+1/-1)
     K = num_b_outcomes * num_r_outcomes   # total joint outcomes
 
-    # collect estimates for each unitary q: a dict NM -> estimate
-    per_q_estimates = {NM: [] for NM in NM_list}
-    per_q_estimates_nd = {NM: [] for NM in NM_list}
+    # prefactors for each t
+    t_values = list(range(t_min, t_max + 1))
+    prefactor_by_t = {t: (d_A1 ** (t - 1)) * (d_A2 ** t) for t in t_values}
 
-    prefactor = (d_A1 ** (t - 1)) * (d_A2 ** t)
-    prefactor2 = (d_A1) * (d_A2 ** 2)
+    # per_q_estimates_by_t[t][NM] -> list over unitaries
+    per_q_estimates_by_t = {t: {NM: [] for NM in NM_list} for t in t_values}
 
     for q in range(Nu):
         d_A = d_A1 * d_A2
@@ -410,26 +418,22 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
             rho_post_r = np.einsum('ijkl,lj->ik', rho_reshaped, Pi_r)
             probs_b = np.real(np.diag(rho_post_r))  # length = d_A1
             probabilities.extend(probs_b)
-            # for P_b in computational_basis:
-            #     prob = np.real(np.trace(rho_post_r @ P_b))
-            #     probabilities.append(prob)
 
         probabilities = np.array(probabilities, dtype=float)
         probabilities /= probabilities.sum()
 
-        # --- key change: sample NM_max individual outcomes in sequence ---
-        # outcomes_idx[i] is in {0..K-1}, representing (r_idx, b_idx)
+        # sample NM_max * d individual outcomes
         outcomes_idx = np.random.choice(K, size=NM_max * d, p=probabilities)
 
-        # maintain cumulative counts for each b: plus/minus
+        # cumulative counts for each b: plus/minus
         n_plus  = np.zeros(num_b_outcomes, dtype=np.int64)
         n_minus = np.zeros(num_b_outcomes, dtype=np.int64)
 
         checkpoints = set(np.array(NM_list) * d)
-        # iterate and update counts; compute estimator at checkpoints
+
         for i, idx in enumerate(outcomes_idx, start=1):
             b = idx % num_b_outcomes
-            r_idx = idx // num_b_outcomes  # 0 -> +1, 1 -> -1 (assuming 2 swap outcomes)
+            r_idx = idx // num_b_outcomes  # 0 -> +1, 1 -> -1
 
             if r_idx == 0:
                 n_plus[b] += 1
@@ -437,54 +441,66 @@ def estimate_negativity_moment_multiNM(rho, nA, nB, t, Nu, NM_list, NM_max=None)
                 n_minus[b] += 1
 
             if i in checkpoints:
-                NM_cur = i
-                denom = math.comb(NM_cur, t) if NM_cur >= t else 0
-                denom2 = math.comb(NM_cur, 2) if NM_cur >= 2 else 0
-                if denom == 0:
-                    M_neg_q = 0.0
-                else:
-                    total_sum = _total_sum_from_counts(n_plus, n_minus, t)
-                    total_sum2 = _total_sum_from_counts(n_plus, n_minus, 2)
-                    M_neg_q = prefactor * (total_sum / denom)
-                    M_neg2nd = prefactor2 * (total_sum2 / denom2)
+                NM_cur = i               # equals NM*d at checkpoint
+                NM_key = int(NM_cur / d) # back to NM
 
-                per_q_estimates[int(NM_cur / d)].append(M_neg_q)
-                per_q_estimates_nd[int(NM_cur / d)].append(M_neg2nd)
+                for t in t_values:
+                    denom = math.comb(NM_cur, t) if NM_cur >= t else 0
+                    if denom == 0:
+                        M_neg_q_t = 0.0
+                    else:
+                        total_sum_t = _total_sum_from_counts(n_plus, n_minus, t)
+                        M_neg_q_t = prefactor_by_t[t] * (total_sum_t / denom)
+
+                    per_q_estimates_by_t[t][NM_key].append(M_neg_q_t)
 
     # average over unitaries
-    final = {NM: float(np.mean(per_q_estimates[NM])) for NM in NM_list}
-    final2nd = {NM: float(np.mean(per_q_estimates_nd[NM])) for NM in NM_list}
-    return final, final2nd
+    final_by_t = {
+        t: {NM: float(np.mean(per_q_estimates_by_t[t][NM])) for NM in NM_list}
+        for t in t_values
+    }
+    return final_by_t
+
 
 
 def _worker_GHZ_multi(args):
-    rho_test, nA, nB, t, Nu, NM_list = args
-    est_dict, est_dict2nd = estimate_negativity_moment_multiNM(rho_test, nA, nB, t, Nu, NM_list, NM_max=max(NM_list))
-    # 返回按 NM_list 顺序排列的误差
-    # return [abs(est_dict[NM] - 4.5) for NM in NM_list]
-    return [est_dict[NM] for NM in NM_list], [est_dict2nd[NM] for NM in NM_list]
+    rho_test, nA, nB, Nu, NM_list, t_min, t_max = args
+
+    final_by_t = estimate_negativity_moment_multiNM(
+        rho_test, nA, nB, Nu, NM_list, NM_max=max(NM_list), t_min=t_min, t_max=t_max
+    )
+
+    t_list = list(range(t_min, t_max + 1))
+    # 返回：每个 t 一行，每行按 NM_list 顺序
+    # shape: (len(t_list), len(NM_list))
+    return [[final_by_t[t][NM] for NM in NM_list] for t in t_list]
 
 def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results_dbasis.csv'):
     d_A = get_dims(nA)
     d_B = get_dims(nB)
     dim_total = d_A * d_B
 
-    ghz_vec = np.zeros(dim_total)
+    ghz_vec = np.zeros(dim_total, dtype=np.complex128)
     ghz_vec[0] = 1/np.sqrt(2)
     ghz_vec[-1] = 1/np.sqrt(2)
     rho_test = np.outer(ghz_vec, ghz_vec.conj())
 
     NM_list = [1, 2, 5, 10, 20, 50, 100]
 
-    args_list = [(rho_test, nA, nB, 3, Nu, NM_list)] * repeat
+    # 一次同时算 t=2..5
+    t_min, t_max = 2, 3
+    args_list = [(rho_test, nA, nB, Nu, NM_list, t_min, t_max)] * repeat
 
     with multiprocessing.Pool() as pool:
-        # results shape: (repeat, len(NM_list))
+        # outs: list of length=repeat
+        # each element shape: (len(t_list), len(NM_list))
         outs = list(tqdm(pool.imap_unordered(_worker_GHZ_multi, args_list), total=repeat))
 
-    results, results2 = map(list, zip(*outs))
-    results = np.asarray(results, dtype=float)
-    results2 = np.asarray(results2, dtype=float)
+    outs = np.array(outs, dtype=float)
+
+
+    results = outs[:, 3, :]
+    results2 = outs[:, 2, :]
     purity = results2 - 1
     thirdM = (results - 1 - 3 * purity) / 2
     results = thirdM - 0.25  # (repeat, L)
@@ -514,6 +530,48 @@ def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results_dbasi
     return df
 
 
+def _worker_heisenberg(args):
+    rho_test, nA, nB, Nu, NM_list, t_min, t_max = args
+
+    final_by_t = estimate_negativity_moment_multiNM(
+        rho_test, nA, nB, Nu, NM_list, NM_max=max(NM_list), t_min=t_min, t_max=t_max
+    )
+
+    t_list = list(range(t_min, t_max + 1))
+    # 返回：每个 t 一行，每行按 NM_list 顺序
+    # shape: (len(t_list), len(NM_list))
+    return [[final_by_t[t][NM] for NM in NM_list] for t in t_list]
+
+
+def experiment_heisenberg_mp(nA, nB, Nu, repeat, csv_filename='heisenberg_dbasis.csv'):
+    d_A = get_dims(nA)
+    d_B = get_dims(nB)
+    dim_total = d_A * d_B
+
+    psi = np.load(f"./heisenberg/heisenberg_N{nA+nB}_Jz1.0.npy")
+    rho_test = np.outer(psi, psi.conj())
+    NM_list = [1, 2, 5, 10, 20, 50, 100]
+
+    # 一次同时算 t=2..5
+    t_min, t_max = 2, 3
+    args_list = [(rho_test, nA, nB, Nu, NM_list, t_min, t_max)] * repeat
+    with multiprocessing.Pool() as pool:
+        outs = list(tqdm(pool.imap_unordered(_worker_heisenberg, args_list), total=repeat))
+    outs = np.array(outs, dtype=float)
+    experiment = []
+    for rep in range(outs.shape[0]):
+        purity = outs[rep, 0, :] - 1
+        thirdM = (outs[rep, 1, :] - 1 - 3 * purity) / 2
+        fourthM = (outs[rep, 2, :] - 1 - 6 * purity - 8 * thirdM - 3 * purity ** 2) / 6
+        fifthM = (outs[rep, 3, :] - 1 - 10 * purity - 20 * thirdM - 15 * purity ** 2
+                  - 30 * fourthM - 20 * purity * thirdM) / 24
+
+        for NM, p2, p3, p4, p5 in zip(NM_list, purity, thirdM, fourthM, fifthM):
+            experiment.append([rep, nA, nB, Nu, NM, float(p2), float(p3), float(p4), float(p5)])
+    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'purity', 'thirdM', 'fourthM', 'fifthM'])
+    file_exists = os.path.exists(csv_filename)
+    df.to_csv(csv_filename, mode='a', header=not file_exists, index=False)
+    return df
 
 
 if __name__ == '__main__':
