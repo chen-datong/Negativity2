@@ -26,12 +26,17 @@ def extract_arrays(df: pd.DataFrame, nA: int, NM: int):
 
     return purity, third, fourth, fifth
 
-THEORY = {
+THEORY8 = {
 2: 1.0000000000000009,
 3: 0.7444526582608291,
 4: 0.6794161346582085,
 5: 0.6113730102112553,
 }
+
+THEORY = {2: 1.0000000000000013,
+3: 0.7339992932054176, 
+4: 0.6694761044425432, 
+5: 0.5968853183347071}
 
 def mean_abs_errors(purity, third, fourth, fifth, theory=THEORY):
     """
@@ -64,8 +69,8 @@ def compute_errors_from_csv(csv_path: str, nA: int, NM: int):
 
 errors = compute_errors_from_csv(
     "heisenberg_dbasis.csv",
-    nA=10,
-    NM=100
+    nA=11,
+    NM=1000
 )
 
 print(errors)

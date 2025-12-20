@@ -110,13 +110,13 @@ def ppt_moments_from_psi(psi: np.ndarray, dA: int, dB: int, t_max: int = 5, sys:
 
 
 if __name__ == "__main__":
-    N = 12
+    N = 13
     J = 1.0
     Delta = 1.0  # Heisenberg
     # E0, psi0, H = ground_state_full(N, J=J, Delta=Delta, pbc=False)
     # print("E0 =", E0)
     # np.save(f"./heisenberg/heisenberg_N{N}_Jz{Delta}.npy", psi0)
     psi0 = np.load(f"./heisenberg/heisenberg_N{N}_Jz{Delta}.npy")
-    dA, dB = 2**10, 2**2
+    dA, dB = 2**11, 2**2
     mom = ppt_moments_from_psi(psi0, dA, dB, t_max=5, sys="B")
     print(mom)
