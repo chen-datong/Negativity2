@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.sparse import kron, identity, csr_matrix
 from scipy.sparse.linalg import eigsh
+import os
 
 # Pauli matrices
 sx = csr_matrix(np.array([[0, 1], [1, 0]], dtype=np.float64))
@@ -113,6 +114,10 @@ def ppt_moment(na, nb, t_max, sys="B"):
     N = na + nb
     J = 1.0
     Delta = 1.0  # Heisenberg
+    if not os.path.exists(f"./heisenberg/heisenberg_N{N}_Jz{Delta}.npy"):
+        E0, psi0, H = ground_state_full(N, J=J, Delta=Delta, pbc=False)
+        print("E0 =", E0)
+        np.save(f"./heisenberg/heisenberg_N{N}_Jz{Delta}.npy", psi0)
     psi = np.load(f"./heisenberg/heisenberg_N{N}_Jz{Delta}.npy")
     dA, dB = 2**na, 2**nb
     moments = ppt_moments_from_psi(psi, dA, dB, t_max=t_max, sys=sys)
