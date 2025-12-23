@@ -357,12 +357,20 @@ def _total_sum_from_counts(n_plus, n_minus, t):
     return total_sum
 
 
-import numpy as np
-import math
-from scipy.stats import unitary_group
+def depolarize(dA1, dA2, dB, prob, dprob):
+    d = dA1 * dA2 * dB
+    dsym = (dB * dB + dB) / 2
+    dasym = (dB * dB - dB) / 2
+    nprob = len(prob)
+    half = int(nprob / 2)
+    prob[0 : half] = (1 - dprob) * prob[0 : half] + dprob / d * dsym
+    prob[half:] = (1 - dprob) * prob[half: ] + dprob / d * dasym
+    prob /= prob.sum()
+    return prob
+    
 
 def estimate_negativity_moment_multiNM(
-    rho, nA, nB, Nu, NM_list, NM_max=None, t_min=2, t_max=5
+    rho, nA, nB, Nu, NM_list, NM_max=None, t_min=2, t_max=5, dprob=0
 ):
     """
     Run the protocol once with NM_max samples, and compute estimates at each NM in NM_list
@@ -421,6 +429,7 @@ def estimate_negativity_moment_multiNM(
 
         probabilities = np.array(probabilities, dtype=float)
         probabilities /= probabilities.sum()
+        probabilities = depolarize(d_A1, d_A2, d_B, probabilities, dprob)
 
         # sample NM_max * d individual outcomes
         outcomes_idx = np.random.choice(K, size=NM_max * d, p=probabilities)
@@ -531,10 +540,10 @@ def experiment_GHZ_mp(nA, nB, Nu, repeat, csv_filename='experiment_results_dbasi
 
 
 def _worker_heisenberg(args):
-    rho_test, nA, nB, Nu, NM_list, t_min, t_max = args
+    rho_test, nA, nB, Nu, NM_list, t_min, t_max, dprob = args
 
     final_by_t = estimate_negativity_moment_multiNM(
-        rho_test, nA, nB, Nu, NM_list, NM_max=max(NM_list), t_min=t_min, t_max=t_max
+        rho_test, nA, nB, Nu, NM_list, NM_max=max(NM_list), t_min=t_min, t_max=t_max, dprob=dprob
     )
 
     t_list = list(range(t_min, t_max + 1))
@@ -543,7 +552,7 @@ def _worker_heisenberg(args):
     return [[final_by_t[t][NM] for NM in NM_list] for t in t_list]
 
 
-def experiment_heisenberg_mp(nA, nB, Nu, repeat, csv_filename='heisenberg_dbasis.csv'):
+def experiment_heisenberg_mp(nA, nB, Nu, repeat, dprob=0, csv_filename='heisenberg_dbasis_prob.csv'):
     d_A = get_dims(nA)
     d_B = get_dims(nB)
     dim_total = d_A * d_B
@@ -553,8 +562,8 @@ def experiment_heisenberg_mp(nA, nB, Nu, repeat, csv_filename='heisenberg_dbasis
     NM_list = [1, 2, 5, 10, 20, 50, 100]
 
     # 一次同时算 t=2..5
-    t_min, t_max = 2, 3
-    args_list = [(rho_test, nA, nB, Nu, NM_list, t_min, t_max)] * repeat
+    t_min, t_max = 2, 5
+    args_list = [(rho_test, nA, nB, Nu, NM_list, t_min, t_max, dprob)] * repeat
     with multiprocessing.Pool() as pool:
         outs = list(tqdm(pool.imap_unordered(_worker_heisenberg, args_list), total=repeat))
     outs = np.array(outs, dtype=float)
@@ -567,11 +576,54 @@ def experiment_heisenberg_mp(nA, nB, Nu, repeat, csv_filename='heisenberg_dbasis
                   - 30 * fourthM - 20 * purity * thirdM) / 24
 
         for NM, p2, p3, p4, p5 in zip(NM_list, purity, thirdM, fourthM, fifthM):
-            experiment.append([rep, nA, nB, Nu, NM, float(p2), float(p3), float(p4), float(p5)])
-    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'purity', 'thirdM', 'fourthM', 'fifthM'])
+            experiment.append([rep, nA, nB, Nu, NM, dprob, float(p2), float(p3), float(p4), float(p5)])
+    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'dprob', 'purity', 'thirdM', 'fourthM', 'fifthM'])
     file_exists = os.path.exists(csv_filename)
     df.to_csv(csv_filename, mode='a', header=not file_exists, index=False)
     return df
+
+
+def _worker_gibbs(args):
+    rho_test, nA, nB, Nu, NM_list, t_min, t_max = args
+
+    final_by_t = estimate_negativity_moment_multiNM(
+        rho_test, nA, nB, Nu, NM_list, NM_max=max(NM_list), t_min=t_min, t_max=t_max
+    )
+
+    t_list = list(range(t_min, t_max + 1))
+    # 返回：每个 t 一行，每行按 NM_list 顺序
+    # shape: (len(t_list), len(NM_list))
+    return [[final_by_t[t][NM] for NM in NM_list] for t in t_list]
+
+def experiment_gibbs_mp(nA, nB, Nu, repeat, beta, csv_filename='gibbs_dbasis.csv'):
+    d_A = get_dims(nA)
+    d_B = get_dims(nB)
+    rho = np.load(f"./gibbs/gibbs_N{nA+nB}_beta{beta:.2f}.npy")
+    NM_list = [1, 2, 5, 10, 20, 50, 100]
+
+    # 一次同时算 t=2..5
+    t_min, t_max = 2, 5
+    args_list = [(rho, nA, nB, Nu, NM_list, t_min, t_max)] * repeat
+    with multiprocessing.Pool() as pool:
+        outs = list(tqdm(pool.imap_unordered(_worker_gibbs, args_list), total=repeat))
+    outs = np.array(outs, dtype=float)
+    experiment = []
+    for rep in range(outs.shape[0]):
+        purity = outs[rep, 0, :] - 1
+        thirdM = (outs[rep, 1, :] - 1 - 3 * purity) / 2
+        fourthM = (outs[rep, 2, :] - 1 - 6 * purity - 8 * thirdM - 3 * purity ** 2) / 6
+        fifthM = (outs[rep, 3, :] - 1 - 10 * purity - 20 * thirdM - 15 * purity ** 2
+                  - 30 * fourthM - 20 * purity * thirdM) / 24
+
+        for NM, p2, p3, p4, p5 in zip(NM_list, purity, thirdM, fourthM, fifthM):
+            experiment.append([rep, nA, nB, Nu, NM, beta, float(p2), float(p3), float(p4), float(p5)])
+    df = pd.DataFrame(experiment, columns=['nA', 'nB', 'Nu', 'NM', 'beta', 'purity', 'thirdM', 'fourthM', 'fifthM'])
+    file_exists = os.path.exists(csv_filename)
+    df.to_csv(csv_filename, mode='a', header=not file_exists, index=False)
+    return df
+
+
+
 
 
 if __name__ == '__main__':
